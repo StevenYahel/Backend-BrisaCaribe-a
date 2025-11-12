@@ -22,16 +22,20 @@ class MeseroSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.CharField(source='producto.nombre', read_only=True)
+
     class Meta:
         model = DetallePedido
-        fields = '__all__'
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'subtotal']
 
 class PedidoSerializer(serializers.ModelSerializer):
-    detalles = DetallePedidoSerializer(many=True, read_only=True)
+    mesa = MesaSerializer(read_only=True)
+    mesero = MeseroSerializer(read_only=True)
+    detalles = DetallePedidoSerializer(many=True, source='detallepedido_set', read_only=True)
 
     class Meta:
         model = Pedido
-        fields = '__all__'
+        fields = ['id', 'nombre_cliente', 'mesa', 'mesero', 'estado', 'total', 'fecha_creacion', 'detalles']
 
 class PagoSerializer(serializers.ModelSerializer):
     class Meta:

@@ -144,3 +144,11 @@ class Pago(models.Model):
         Retorna True si el pago cubre el total del pedido.
         """
         return self.monto_pagado >= self.pedido.total
+class Productos(models.Model):
+    nombre = models.CharField(max_length=100)
+    precio = models.DecimalField(max_digits=8, decimal_places=2)
+    disponible = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Producto"
+        verbose_name_plural = "Productos"

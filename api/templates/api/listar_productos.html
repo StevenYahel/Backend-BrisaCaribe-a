@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Lista de Productos</title>
+</head>
+<body>
+    <h1>Productos registrados</h1>
+
+    <table border="1" cellpadding="5" cellspacing="0">
+        <thead>
+            <tr>
+                <th>Nombre</th>
+                <th>Descripción</th>
+                <th>Precio</th>
+                <th>Disponible</th>
+                <th>Categoría</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for producto in productos %}
+                <tr>
+                    <td>{{ producto.nombre }}</td>
+                    <td>{{ producto.descripcion }}</td>
+                    <td>${{ producto.precio }}</td>
+                    <td>{{ producto.disponible|yesno:"Sí,No" }}</td>
+                    <td>{{ producto.categoria.nombre }}</td>
+                </tr>
+            {% empty %}
+                <tr>
+                    <td colspan="5">No hay productos registrados.</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <a href="{% url 'crear_producto' %}">Crear nuevo producto</a>
+</body>
+</html>

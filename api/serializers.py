@@ -23,19 +23,24 @@ class MeseroSerializer(serializers.ModelSerializer):
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.CharField(source='producto.nombre', read_only=True)
+    subtotal = serializers.SerializerMethodField()
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'subtotal']
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'precio_unitario', 'subtotal']
+
+    def get_subtotal(self, obj):
+        return obj.cantidad * obj.precio_unitario
 
 class PedidoSerializer(serializers.ModelSerializer):
     mesa = MesaSerializer(read_only=True)
     mesero = MeseroSerializer(read_only=True)
-    detalles = DetallePedidoSerializer(many=True, source='detallepedido_set', read_only=True)
+    detalles = DetallePedidoSerializer(many=True, read_only=True)  # usa el related_name definido en el modelo
+    nombre_cliente = serializers.CharField(source='mesero.nombre', read_only=True)
 
     class Meta:
         model = Pedido
-        fields = ['id', 'nombre_cliente', 'mesa', 'mesero', 'estado', 'total', 'fecha_creacion', 'detalles']
+        fields = ['id', 'nombre_cliente', 'mesa', 'mesero', 'estado', 'total', 'fecha_hora', 'detalles']
 
 class PagoSerializer(serializers.ModelSerializer):
     class Meta:

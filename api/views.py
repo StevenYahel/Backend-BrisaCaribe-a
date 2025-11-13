@@ -1,16 +1,19 @@
 from django.shortcuts import render, redirect
 from django.http import JsonResponse
 from django.contrib import messages
-from rest_framework import viewsets, status
+from django.contrib.auth import authenticate
+from django.views.decorators.csrf import csrf_exempt
+
+from rest_framework import viewsets
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db.models import Sum, Count
 from django.db.models.functions import TruncDate
-from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth import authenticate
-import json
 
-from .models import Categoria, Producto, Mesa, Mesero, Pedido, DetallePedido, Pago
+from .models import (
+    Categoria, Producto, Mesa, Mesero,
+    Pedido, DetallePedido, Pago
+)
 from .serializers import (
     CategoriaSerializer, ProductoSerializer, MesaSerializer,
     MeseroSerializer, PedidoSerializer, DetallePedidoSerializer, PagoSerializer
@@ -73,7 +76,7 @@ def hola_mundo(request):
     return JsonResponse({"mensaje": "Hola desde la API"})
 
 # -------------------------------
-# Carrito temporal
+# Carrito temporal (solo pruebas)
 # -------------------------------
 carrito = []
 
@@ -93,44 +96,50 @@ def agregar_al_carrito(request):
     return Response({'mensaje': 'Producto agregado al carrito', 'carrito': carrito})
 
 # -------------------------------
-# Registrar pedido
+# Registrar pedido (única versión)
 # -------------------------------
-@csrf_exempt
 @api_view(['POST'])
 def registrar_pedido(request):
     """
+    Crea un pedido con sus detalles y calcula el total.
     JSON esperado:
     {
-        "mesero": "Juan",
-        "mesa": 1,
-        "items": [
-            {"id": 1, "cantidad": 2},
-            {"id": 3, "cantidad": 1}
+        "mesa_id": 1,
+        "productos": [
+            {"producto_id": 1, "cantidad": 2},
+            {"producto_id": 3, "cantidad": 1}
         ]
     }
     """
     try:
         data = request.data
-        items = data.get('items', [])
-        mesa_numero = data.get('mesa')
-        mesero_nombre = data.get('mesero')
+        mesa_id = data.get("mesa_id")
+        productos = data.get("productos", [])
 
-        mesa = Mesa.objects.filter(numero=mesa_numero).first() if mesa_numero else None
-        mesero = Mesero.objects.filter(nombre__iexact=mesero_nombre).first() if mesero_nombre else None
+        if not mesa_id or not productos:
+            return Response({"error": "Faltan campos requeridos"}, status=400)
 
-        if not mesa or not mesero:
-            return Response({"error": "Mesa o mesero no encontrados"}, status=404)
+        # Verificar mesa
+        mesa = Mesa.objects.filter(id=mesa_id).first()
+        if not mesa:
+            return Response({"error": "Mesa no encontrada"}, status=404)
 
+        # Crear pedido
         pedido = Pedido.objects.create(
             mesa=mesa,
-            mesero=mesero,
-            estado="pendiente"
+            estado="pendiente",
+            total=0
         )
 
         total = 0
-        for item in items:
-            producto = Producto.objects.get(id=item['id'])
-            cantidad = int(item.get('cantidad', 1))
+        detalles = []
+
+        for item in productos:
+            producto = Producto.objects.filter(id=item.get("producto_id")).first()
+            if not producto:
+                continue
+
+            cantidad = int(item.get("cantidad", 1))
             subtotal = producto.precio * cantidad
             total += subtotal
 
@@ -141,18 +150,26 @@ def registrar_pedido(request):
                 precio_unitario=producto.precio
             )
 
+            detalles.append({
+                "producto": producto.nombre,
+                "cantidad": cantidad,
+                "subtotal": subtotal
+            })
+
         pedido.total = total
         pedido.save()
 
-        carrito.clear()  # limpiar carrito
+        return Response({
+            "mensaje": "Pedido registrado correctamente",
+            "pedido_id": pedido.id,
+            "estado": pedido.estado,
+            "total": total,
+            "detalles": detalles
+        }, status=201)
 
-        return Response({"mensaje": "Pedido registrado correctamente", "id_pedido": pedido.id}, status=status.HTTP_201_CREATED)
-
-    except Producto.DoesNotExist:
-        return Response({"error": "Producto no encontrado"}, status=404)
     except Exception as e:
-        print("⚠️ Error al registrar pedido:", e)
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        print("⚠️ Error registrando pedido:", e)
+        return Response({"error": str(e)}, status=500)
 
 # -------------------------------
 # Pedidos pendientes para cocina
@@ -160,27 +177,31 @@ def registrar_pedido(request):
 @api_view(['GET'])
 def pedidos_cocina(request):
     try:
-        pedidos = Pedido.objects.filter(estado='pendiente').order_by('id')
-        pedidos_list = []
+        pedidos = Pedido.objects.filter(estado__in=['pendiente', 'en preparación']).order_by('-id')
+        data = []
 
         for pedido in pedidos:
-            detalles = [
+            detalles = DetallePedido.objects.filter(pedido=pedido)
+            detalles_data = [
                 {
-                    "producto_nombre": d.producto.nombre,
-                    "cantidad": d.cantidad,
-                    "subtotal": float(d.precio_unitario * d.cantidad)
-                } for d in pedido.detalles.all()
+                    "producto_nombre": det.producto.nombre,
+                    "cantidad": det.cantidad,
+                    "subtotal": float(det.precio_unitario * det.cantidad)
+                }
+                for det in detalles
             ]
 
-            pedidos_list.append({
+            data.append({
                 "id": pedido.id,
-                "mesa": pedido.mesa.numero,
-                "mesero": pedido.mesero.nombre,
+                "mesa": pedido.mesa.numero if pedido.mesa else None,
+                "mesero": pedido.mesero.nombre if pedido.mesero else None,
                 "total": float(pedido.total),
-                "detalles": detalles
+                "estado": pedido.estado,
+                "detalles": detalles_data
             })
 
-        return Response(pedidos_list)
+        return Response(data)
+
     except Exception as e:
         print("⚠️ Error en pedidos_cocina:", e)
         return Response({"error": str(e)}, status=500)
@@ -210,6 +231,16 @@ def actualizar_pedido_estado(request, pedido_id):
     except Exception as e:
         print("⚠️ Error actualizando pedido:", e)
         return Response({"error": str(e)}, status=500)
+
+# -------------------------------
+# Mesas disponibles
+# -------------------------------
+@api_view(['GET'])
+def mesas_disponibles(request):
+    mesas_ocupadas = Pedido.objects.filter(estado__in=['pendiente', 'en preparación']).values_list('mesa_id', flat=True)
+    mesas_libres = Mesa.objects.exclude(id__in=mesas_ocupadas)
+    mesas_data = [{"id": m.id, "numero": m.numero} for m in mesas_libres]
+    return Response(mesas_data)
 
 # -------------------------------
 # Registrar pago
@@ -252,7 +283,7 @@ def registrar_pago(request):
         return Response({"error": str(e)}, status=500)
 
 # -------------------------------
-# Dashboard
+# Dashboard y estadísticas
 # -------------------------------
 @api_view(['GET'])
 def resumen_dashboard(request):
@@ -319,3 +350,60 @@ def login_admin(request):
             return JsonResponse({'success': False, 'message': str(e)}, status=500)
 
     return JsonResponse({'success': False, 'message': 'Método no permitido'}, status=405)
+
+# -------------------------------
+# Pedidos activos por mesero
+# -------------------------------
+@api_view(['GET'])
+def pedidos_por_mesero(request, mesero_id):
+    try:
+        pedidos = Pedido.objects.filter(mesero_id=mesero_id).order_by('-id')
+        data = []
+
+        for pedido in pedidos:
+            detalles = DetallePedido.objects.filter(pedido=pedido)
+            detalles_data = [
+                {
+                    "producto_nombre": det.producto.nombre,
+                    "cantidad": det.cantidad,
+                    "subtotal": float(det.precio_unitario * det.cantidad)
+                }
+                for det in detalles
+            ]
+
+            data.append({
+                "id": pedido.id,
+                "mesa": pedido.mesa.numero if pedido.mesa else None,
+                "total": float(pedido.total),
+                "estado": pedido.estado,
+                "detalles": detalles_data
+            })
+
+        return Response(data)
+
+    except Exception as e:
+        print("⚠️ Error en pedidos_por_mesero:", e)
+        return Response({"error": str(e)}, status=500)
+
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from .models import Pedido
+
+@csrf_exempt
+def marcar_entregado(request, pedido_id):
+    """
+    Cambia el estado del pedido a 'servido'.
+    """
+    try:
+        pedido = Pedido.objects.get(id=pedido_id)
+        pedido.estado = "servido"
+        pedido.save()
+
+        return JsonResponse({
+            "message": "Pedido marcado como entregado (servido).",
+            "pedido_id": pedido.id,
+            "nuevo_estado": pedido.estado,
+        })
+    
+    except Pedido.DoesNotExist:
+        return JsonResponse({"error": "El pedido no existe"}, status=404)

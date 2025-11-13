@@ -131,7 +131,7 @@ JAZZMIN_SETTINGS = {
     "welcome_sign": "Bienvenido al panel administrativo",
     "copyright": "Brisa Caribeña © 2025",
     "show_ui_builder": True,
-    "theme": "darkly",  # O "flatly", "solar", "cyborg", "lux", etc.
+    "theme": "darkly", 
     "icons": {
         "api.Producto": "fas fa-utensils",
         "api.Pedido": "fas fa-receipt",

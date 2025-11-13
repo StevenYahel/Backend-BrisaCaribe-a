@@ -78,7 +78,7 @@ class Pedido(models.Model):
         ('cancelado', 'Cancelado'),
     ]
 
-    mesa = models.ForeignKey(Mesa, on_delete=models.CASCADE, related_name="pedidos")
+    mesa = models.ForeignKey(Mesa, on_delete=models.CASCADE, related_name="pedidos", null=True, blank=True)
     mesero = models.ForeignKey(Mesero, on_delete=models.SET_NULL, null=True, related_name="pedidos")
     fecha_hora = models.DateTimeField(default=timezone.now)
     estado = models.CharField(max_length=20, choices=ESTADOS, default='pendiente')
@@ -115,6 +115,26 @@ class DetallePedido(models.Model):
         return f"{self.cantidad} x {self.producto.nombre} (Pedido #{self.pedido.id})"
     
 
+from django.http import JsonResponse
+from .models import Pedido
+
+def marcar_entregado(request, pedido_id):
+    """
+    Cambia el estado del pedido a 'servido'.
+    """
+    try:
+        pedido = Pedido.objects.get(id=pedido_id)
+        pedido.estado = "servido"
+        pedido.save()
+
+        return JsonResponse({
+            "message": "Pedido marcado como entregado (servido).",
+            "pedido_id": pedido.id,
+            "nuevo_estado": pedido.estado,
+        })
+    
+    except Pedido.DoesNotExist:
+        return JsonResponse({"error": "El pedido no existe"}, status=404)
 
 
 # Módulo de Pagos #

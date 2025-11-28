@@ -9,7 +9,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Seguridad
 # -------------------------------
 SECRET_KEY = 'django-insecure-m8-w3o7!zb1_#+rf)80vk0=h95(60_ztv7gya0#lb7$1bmla1g'
-
 DEBUG = True
 ALLOWED_HOSTS = []
 
@@ -24,10 +23,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+     
+    
 
     # Terceros
     'rest_framework',
     'corsheaders',
+    'channels',  # ✅ Channels para WebSockets
 
     # App principal
     'api.apps.ApiConfig',
@@ -37,7 +39,7 @@ INSTALLED_APPS = [
 # Middleware
 # -------------------------------
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware', 
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -58,10 +60,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5501",
 ]
 
-
 CORS_ALLOW_ALL_ORIGINS = True
-
-
 CORS_ALLOW_CREDENTIALS = True
 
 # -------------------------------
@@ -85,6 +84,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'backend.wsgi.application'
+ASGI_APPLICATION = 'backend.asgi.application'  # ✅ ASGI para Channels
 
 # -------------------------------
 # Base de datos
@@ -95,7 +95,6 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-
 
 # -------------------------------
 # Validadores de contraseña
@@ -111,7 +110,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internacionalización
 # -------------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/Bogota'
 USE_I18N = True
 USE_TZ = True
 
@@ -124,6 +123,10 @@ STATIC_URL = 'static/'
 # Clave primaria por defecto
 # -------------------------------
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# -------------------------------
+# Jazzmin
+# -------------------------------
 JAZZMIN_SETTINGS = {
     "site_title": "Panel Administrativo - Brisa Caribeña",
     "site_header": "Administración del Sistema Brisa Caribeña",
@@ -143,3 +146,14 @@ JAZZMIN_SETTINGS = {
     },
 }
 
+# -------------------------------
+# Django Channels (WebSockets)
+# -------------------------------
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",  #Redis
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}

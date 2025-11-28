@@ -46,3 +46,22 @@ class Migration(migrations.Migration):
             field=models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID'),
         ),
     ]
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('api', '0001_initial'),  
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name='pedido',
+            name='hora_inicio_preparacion',
+            field=models.DateTimeField(null=True, blank=True),
+        ),
+        migrations.AddField(
+            model_name='pedido',
+            name='hora_fin_preparacion',
+            field=models.DateTimeField(null=True, blank=True),
+        ),
+    ]

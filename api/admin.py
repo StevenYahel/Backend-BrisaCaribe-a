@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.utils.html import format_html
 from .models import Categoria, Producto, Mesa, Mesero, Pedido, DetallePedido, Pago
 
 # === ADMIN DE CATEGORÍAS ===
@@ -32,12 +33,25 @@ class MeseroAdmin(admin.ModelAdmin):
     list_filter = ('activo',)
 
 
-# === ADMIN DE PEDIDOS ===
+# === ADMIN DE PEDIDOS — CON ESTADO COLOREADO ===
 @admin.register(Pedido)
 class PedidoAdmin(admin.ModelAdmin):
-    list_display = ('id', 'mesa', 'mesero', 'fecha_hora', 'estado', 'total')
+    list_display = ('id', 'mesa', 'mesero', 'fecha_hora', 'estado_coloreado', 'total')
     list_filter = ('estado', 'fecha_hora')
     search_fields = ('mesa__numero', 'mesero__nombre')
+
+    def estado_coloreado(self, obj):
+        colores = {
+            'pendiente': 'orange',
+            'en preparación': 'blue',
+            'listo': 'green',
+            'entregado': 'gray',
+            'retrasado': 'red',
+        }
+        color = colores.get(obj.estado, 'black')
+        return format_html(f"<b><span style='color:{color}'>{obj.estado.upper()}</span></b>")
+
+    estado_coloreado.short_description = "Estado"
 
 
 # === ADMIN DE DETALLES DE PEDIDO ===
@@ -47,6 +61,7 @@ class DetallePedidoAdmin(admin.ModelAdmin):
 
     def subtotal_display(self, obj):
         return obj.subtotal()
+
     subtotal_display.short_description = 'Subtotal'
 
 

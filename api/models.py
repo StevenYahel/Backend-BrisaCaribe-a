@@ -54,69 +54,65 @@ class Mesero(models.Model):
 # ===============================
 # MÓDULO PEDIDOS
 # ===============================
+from django.db import models
+from django.utils import timezone
+
+
 class Pedido(models.Model):
     ESTADOS = [
-        ('pendiente', 'Pendiente'),
-        ('en_preparacion', 'En preparación'),
-        ('servido', 'Servido'),
-        ('pagado', 'Pagado'),
-        ('cancelado', 'Cancelado'),
-        ('retrasado', 'Retrasado')
+        ("pendiente", "Pendiente"),
+        ("en_preparacion", "En preparación"),
+        ("listo", "Listo"),
+        ("servido", "Servido"),
+        ("pagado", "Pagado"),
+        ("cancelado", "Cancelado"),
+        ("retrasado", "Retrasado"),
     ]
 
-    mesa = models.ForeignKey(Mesa, on_delete=models.CASCADE, related_name="pedidos", null=True, blank=True)
-    mesero = models.ForeignKey(Mesero, on_delete=models.SET_NULL, null=True, related_name="pedidos")
-    fecha_hora = models.DateTimeField(default=timezone.now)
-    estado = models.CharField(max_length=20, choices=ESTADOS, default='pendiente')
+    mesa = models.ForeignKey("Mesa", on_delete=models.SET_NULL, null=True, blank=True)
+    mesero = models.ForeignKey("Mesero", on_delete=models.SET_NULL, null=True, blank=True)
+
+    estado = models.CharField(max_length=20, choices=ESTADOS, default="pendiente")
+    fecha_hora = models.DateTimeField(auto_now_add=True)
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    hora_inicio_preparacion = models.DateTimeField(null=True, blank=True)
-    hora_fin_preparacion = models.DateTimeField(null=True, blank=True)
 
-    def calcular_total(self):
-        total = sum(detalle.subtotal() for detalle in self.detalles.all())
-        self.total = total
-        self.save()
-
-    @property
-    def tiempo_transcurrido_min(self):
-        return (timezone.now() - self.fecha_hora).total_seconds() / 60
-
-    @property
-    def tiempo_preparacion(self):
-        if self.hora_inicio_preparacion and self.hora_fin_preparacion:
-            return (self.hora_fin_preparacion - self.hora_inicio_preparacion).total_seconds() / 60
-        return None
-
-    def marcar_inicio_preparacion(self):
-        if not self.hora_inicio_preparacion:
-            self.hora_inicio_preparacion = timezone.now()
-            self.save()
-
-    def marcar_fin_preparacion(self):
-        if not self.hora_fin_preparacion:
-            self.hora_fin_preparacion = timezone.now()
-            self.save()
-
-    def __str__(self):
-        mesa_num = self.mesa.numero if self.mesa else "N/A"
-        return f"Pedido #{self.id} - Mesa {mesa_num} - {self.estado}"
+    #  Campos de tiempo
+    tiempo_inicio = models.DateTimeField(null=True, blank=True)
+    tiempo_fin = models.DateTimeField(null=True, blank=True)
+    tiempo_preparacion = models.FloatField(null=True, blank=True)  # minutos
 
     def save(self, *args, **kwargs):
-        # --- REGISTRO AUTOMÁTICO DE TIEMPOS ---
-        
-        if self.estado == "en_preparacion" and not self.hora_inicio_preparacion:
-            self.hora_inicio_preparacion = timezone.now()
+        """Lógica inteligente y tolerante del manejo de tiempos, sin errores."""
 
-        if self.estado == "servido" and not self.hora_fin_preparacion:
-            self.hora_fin_preparacion = timezone.now()
+        estado_actual = self.estado
+
+        #  1. Si el pedido pasa a "en preparación" → establecer tiempo_inicio
+        if estado_actual == "en_preparacion" and not self.tiempo_inicio:
+            self.tiempo_inicio = timezone.now()
+
+        #  2. Si el pedido pasa a "listo", "servido" o "pagado":
+        
+        if estado_actual in ["listo", "servido", "pagado"]:
+
+            # Si tiene inicio pero no fin → cerrar el tiempo
+            if self.tiempo_inicio and not self.tiempo_fin:
+                self.tiempo_fin = timezone.now()
+
+        #  3. Cálculo del tiempo total (solo si ambos tiempos existen)
+        if self.tiempo_inicio and self.tiempo_fin:
+            duracion = self.tiempo_fin - self.tiempo_inicio
+            self.tiempo_preparacion = round(duracion.total_seconds() / 60, 2)
+        else:
+            self.tiempo_preparacion = None
 
         super().save(*args, **kwargs)
 
-
+    def __str__(self):
+        return f"Pedido #{self.id} - {self.estado}"
 
 
 # ===============================
-# DETALLE DE PEDIDO (Faltaba)
+# DETALLE DE PEDIDO 
 # ===============================
 class DetallePedido(models.Model):
     pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name="detalles")

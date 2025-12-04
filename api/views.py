@@ -5,18 +5,25 @@ from django.contrib.auth import authenticate
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from datetime import timedelta
+from rest_framework import status
+from django.http import HttpResponse
+
 
 from rest_framework import viewsets
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
 
-from django.db.models import Sum, Count
+
+from django.db.models import Sum, Count, F, DurationField, ExpressionWrapper
 from django.db.models.functions import TruncDate
 
-from xhtml2pdf import pisa
-from .models import Pago, Pedido
+from django.template.loader import get_template 
+from io import BytesIO
 
+
+from xhtml2pdf import pisa
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 
@@ -34,9 +41,9 @@ from .forms import ProductoForm
 import json
 
 
-# ===============================
+# =====================================
 # CRUD ViewSets
-# ===============================
+# =====================================
 class CategoriaViewSet(viewsets.ModelViewSet):
     queryset = Categoria.objects.all()
     serializer_class = CategoriaSerializer
@@ -72,9 +79,9 @@ class PagoViewSet(viewsets.ModelViewSet):
     serializer_class = PagoSerializer
 
 
-# ===============================
+# =====================================
 # Formularios HTML
-# ===============================
+# =====================================
 def crear_producto(request):
     if request.method == 'POST':
         form = ProductoForm(request.POST)
@@ -92,21 +99,22 @@ def listar_productos(request):
     return render(request, 'api/listar_productos.html', {'productos': productos})
 
 
-# ===============================
+# =====================================
 # Prueba API
-# ===============================
+# =====================================
 def hola_mundo(request):
     return JsonResponse({"mensaje": "Hola desde la API"})
 
 
-# ===============================
-# Carrito 
-# ===============================
+# =====================================
+# Carrito
+# =====================================
 carrito = []
 
 @api_view(['GET'])
 def obtener_carrito(request):
     return Response({'carrito': carrito})
+
 
 @api_view(['POST'])
 def agregar_al_carrito(request):
@@ -117,12 +125,12 @@ def agregar_al_carrito(request):
         return Response({'error': 'Se requiere el ID del producto'}, status=400)
 
     carrito.append({'producto_id': producto_id, 'cantidad': cantidad})
-    return Response({'mensaje': 'Producto agregado al carrito', 'carrito': carrito})
+    return Response({'mensaje': 'Producto agregado', 'carrito': carrito})
 
 
-# ===============================
-# Registrar Pedido
-# ===============================
+# =====================================
+# Registrar Pedido (Administrador)
+# =====================================
 @api_view(['POST'])
 def registrar_pedido(request):
     try:
@@ -131,17 +139,16 @@ def registrar_pedido(request):
         productos = request.data.get("productos", [])
 
         if not mesa_id or not mesero_id or not productos:
-            return Response({"error": "Faltan campos requeridos"}, status=400)
+            return Response({"error": "Faltan datos"}, status=400)
 
         mesa = Mesa.objects.filter(id=mesa_id).first()
+        mesero = Mesero.objects.filter(id=mesero_id).first()
+
         if not mesa:
             return Response({"error": "Mesa no encontrada"}, status=404)
-
-        mesero = Mesero.objects.filter(id=mesero_id).first()
         if not mesero:
             return Response({"error": "Mesero no encontrado"}, status=404)
 
-        # Crear el pedido
         pedido = Pedido.objects.create(
             mesa=mesa,
             mesero=mesero,
@@ -150,7 +157,7 @@ def registrar_pedido(request):
         )
 
         total = 0
-        detalles = []
+        detalles_finales = []
 
         for item in productos:
             producto = Producto.objects.filter(id=item.get("producto_id")).first()
@@ -168,7 +175,7 @@ def registrar_pedido(request):
                 precio_unitario=producto.precio
             )
 
-            detalles.append({
+            detalles_finales.append({
                 "producto": producto.nombre,
                 "cantidad": cantidad,
                 "subtotal": subtotal
@@ -178,19 +185,19 @@ def registrar_pedido(request):
         pedido.save()
 
         return Response({
-            "mensaje": "Pedido registrado correctamente",
+            "mensaje": "Pedido registrado",
             "pedido_id": pedido.id,
             "total": total,
-            "detalles": detalles
-        }, status=201)
+            "detalles": detalles_finales
+        })
 
     except Exception as e:
         return Response({"error": str(e)}, status=500)
 
 
-# ===============================
+# =====================================
 # Pedidos para cocina
-# ===============================
+# =====================================
 @api_view(['GET'])
 def pedidos_cocina(request):
     try:
@@ -199,17 +206,8 @@ def pedidos_cocina(request):
         ).order_by('-id')
 
         data = []
-
         for pedido in pedidos:
             detalles = DetallePedido.objects.filter(pedido=pedido)
-            detalles_data = [
-                {
-                    "producto_nombre": det.producto.nombre,
-                    "cantidad": det.cantidad,
-                    "subtotal": float(det.precio_unitario * det.cantidad)
-                }
-                for det in detalles
-            ]
 
             data.append({
                 "id": pedido.id,
@@ -217,7 +215,14 @@ def pedidos_cocina(request):
                 "mesero": pedido.mesero.nombre if pedido.mesero else None,
                 "total": float(pedido.total),
                 "estado": pedido.estado,
-                "detalles": detalles_data
+                "detalles": [
+                    {
+                        "producto_nombre": d.producto.nombre,
+                        "cantidad": d.cantidad,
+                        "subtotal": float(d.precio_unitario * d.cantidad)
+                    }
+                    for d in detalles
+                ]
             })
 
         return Response(data)
@@ -226,36 +231,66 @@ def pedidos_cocina(request):
         return Response({"error": str(e)}, status=500)
 
 
-# ===============================
+
+
+# =====================================
 # Actualizar estado de pedido
-# ===============================
+# =====================================
+
 @api_view(['PATCH'])
-def actualizar_pedido_estado(request, pedido_id):
+def actualizar_pedido_estado(request, pk):
+    """
+    Actualiza el estado de un pedido y gestiona automáticamente
+    los tiempos de inicio, fin y preparación.
+    """
     try:
-        pedido = Pedido.objects.filter(id=pedido_id).first()
+        pedido = Pedido.objects.get(pk=pk)
+    except Pedido.DoesNotExist:
+        return Response({"detail": "Pedido no encontrado"}, status=status.HTTP_404_NOT_FOUND)
 
-        if not pedido:
-            return Response({"error": "Pedido no encontrado."}, status=404)
+    # Obtener estado enviado desde el JS
+    estado = request.data.get('estado')
+    if not estado:
+        return Response({"detail": "No se proporcionó el estado"}, status=status.HTTP_400_BAD_REQUEST)
 
-        nuevo_estado = request.data.get('estado')
-        if not nuevo_estado:
-            return Response({"error": "Debe enviar el estado a actualizar."}, status=400)
+    # Validar que el estado sea uno permitido
+    if estado not in [e[0] for e in Pedido.ESTADOS]:
+        return Response({"detail": f"Estado inválido: {estado}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        pedido.estado = nuevo_estado
-        pedido.save()
+    pedido.estado = estado
 
-        return Response({
-            "mensaje": f"Pedido {pedido_id} actualizado",
-            "estado": pedido.estado
-        })
+    # ===== Lógica de tiempos =====
+    if estado == "en_preparacion" and not pedido.tiempo_inicio:
+        pedido.tiempo_inicio = timezone.now()
 
-    except Exception as e:
-        return Response({"error": str(e)}, status=500)
+    if estado in ["listo", "servido", "pagado"]:
+        if pedido.tiempo_inicio and not pedido.tiempo_fin:
+            pedido.tiempo_fin = timezone.now()
 
+    # Calcular tiempo de preparación
+    if pedido.tiempo_inicio and pedido.tiempo_fin:
+        duracion = pedido.tiempo_fin - pedido.tiempo_inicio
+        pedido.tiempo_preparacion = round(duracion.total_seconds() / 60, 2)
+    else:
+        pedido.tiempo_preparacion = None
 
-# ===============================
+    pedido.save()
+
+    # Retornar datos para el JS
+    return Response({
+        "pedido": {
+            "id": pedido.id,
+            "estado": pedido.estado,
+            "estado_normalizado": pedido.estado,
+            "tiempo_inicio": pedido.tiempo_inicio,
+            "tiempo_fin": pedido.tiempo_fin,
+            "tiempo_preparacion": pedido.tiempo_preparacion
+        }
+    }, status=status.HTTP_200_OK)
+
+# =====================================
 # Mesas disponibles
-# ===============================
+# =====================================
 @api_view(['GET'])
 def mesas_disponibles(request):
     mesas_ocupadas = Pedido.objects.filter(
@@ -270,9 +305,10 @@ def mesas_disponibles(request):
     ])
 
 
-# ===============================
-# Registrar pago
-# ===============================
+# =====================================
+# Registrar Pago
+# =====================================
+
 @api_view(['POST'])
 def registrar_pago(request):
     try:
@@ -281,36 +317,47 @@ def registrar_pago(request):
         monto = request.data.get("monto_pagado")
 
         if not all([pedido_id, metodo, monto]):
-            return Response({"error": "Faltan campos requeridos"}, status=400)
+            return Response({"error": "Faltan datos"}, status=400)
 
         pedido = Pedido.objects.filter(id=pedido_id).first()
         if not pedido:
-            return Response({"error": "Pedido no encontrado"}, status=404)
+            return Response({"error": "Pedido no existe"}, status=404)
 
         if Pago.objects.filter(pedido=pedido).exists():
-            return Response({"error": "El pedido ya tiene un pago registrado"}, status=400)
+            return Response({"error": "Ya tiene pago"}, status=400)
 
+        # Crear pago
         pago = Pago.objects.create(
             pedido=pedido,
             metodo_pago=metodo,
             monto_pagado=monto
         )
 
+        # Cambiar estado del pedido a "pagado"
         pedido.estado = "pagado"
         pedido.save()
 
-        return Response({
-            "mensaje": "Pago registrado correctamente",
-            "pago_id": pago.id
-        }, status=201)
+        # Notificar a través de WebSocket
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            "pedidos",
+            {
+                "type": "enviar_pedido",
+                "mensaje": {
+                    "pedido_id": pedido.id,
+                    "estado": pedido.estado
+                }
+            }
+        )
+
+        return Response({"mensaje": "Pago registrado", "pago_id": pago.id})
 
     except Exception as e:
-        return Response({"error": str(e)}, status=500)
+        return Response({"error": f"Error interno: {str(e)}"}, status=500)
 
-
-# ===============================
+# =====================================
 # Dashboard
-# ===============================
+# =====================================
 @api_view(['GET'])
 def resumen_dashboard(request):
     datos = {
@@ -328,7 +375,7 @@ def estadisticas_dashboard(request):
             fecha=TruncDate('fecha_pago')
         ).values('fecha').annotate(
             total=Sum('monto_pagado')
-        ).order_by('fecha')
+        )
     )
 
     pedidos_por_dia = list(
@@ -336,7 +383,7 @@ def estadisticas_dashboard(request):
             fecha=TruncDate('fecha_hora')
         ).values('fecha').annotate(
             total=Count('id')
-        ).order_by('fecha')
+        )
     )
 
     return Response({
@@ -345,14 +392,15 @@ def estadisticas_dashboard(request):
     })
 
 
-# ===============================
-# Login administrador
-# ===============================
+# =====================================
+# Login Admin
+# =====================================
 @csrf_exempt
 def login_admin(request):
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
+
             user = authenticate(
                 username=data.get('username'),
                 password=data.get('password')
@@ -369,39 +417,37 @@ def login_admin(request):
     return JsonResponse({'success': False, 'message': 'Método no permitido'}, status=405)
 
 
-# ===============================
+# =====================================
 # Pedidos por mesero
-# ===============================
+# =====================================
 @api_view(['GET'])
 def pedidos_por_mesero(request, mesero_id):
     pedidos = Pedido.objects.filter(mesero_id=mesero_id).order_by('-id')
 
     resultado = []
-
-    for pedido in pedidos:
-        detalles = DetallePedido.objects.filter(pedido=pedido)
+    for p in pedidos:
+        detalles = DetallePedido.objects.filter(pedido=p)
 
         resultado.append({
-            "id": pedido.id,
-            "mesa": pedido.mesa.numero if pedido.mesa else None,
-            "total": float(pedido.total),
-            "estado": pedido.estado,
+            "id": p.id,
+            "mesa": p.mesa.numero if p.mesa else None,
+            "total": float(p.total),
+            "estado": p.estado,
             "detalles": [
                 {
                     "producto_nombre": d.producto.nombre,
                     "cantidad": d.cantidad,
                     "subtotal": float(d.precio_unitario * d.cantidad)
-                }
-                for d in detalles
+                } for d in detalles
             ]
         })
 
     return Response(resultado)
 
 
-# ===============================
+# =====================================
 # Marcar pedido como entregado
-# ===============================
+# =====================================
 @csrf_exempt
 def marcar_entregado(request, pedido_id):
     try:
@@ -409,71 +455,60 @@ def marcar_entregado(request, pedido_id):
         pedido.estado = "servido"
         pedido.save()
 
-        return JsonResponse({
-            "message": "Pedido marcado como entregado",
-            "pedido_id": pedido.id
-        })
-
+        return JsonResponse({"message": "Pedido entregado"})
     except Pedido.DoesNotExist:
-        return JsonResponse({"error": "El pedido no existe"}, status=404)
+        return JsonResponse({"error": "No existe"}, status=404)
 
 
-# ===============================
-# Pedidos por usuario (cliente)
-# ===============================
+# =====================================
+# Pedidos por usuario-cliente
+# =====================================
 class PedidosPorUsuarioView(APIView):
     def get(self, request, id_usuario):
         pedidos = Pedido.objects.filter(mesa_id=id_usuario).order_by('-id')
 
-        resultado = []
+        salida = []
+        for p in pedidos:
+            detalles = DetallePedido.objects.filter(pedido=p)
 
-        for pedido in pedidos:
-            detalles = DetallePedido.objects.filter(pedido=pedido)
-
-            resultado.append({
-                "id": pedido.id,
-                "mesa": pedido.mesa.numero if pedido.mesa else None,
-                "total": float(pedido.total),
-                "estado": pedido.estado,
-                "fecha": str(pedido.fecha_hora),
+            salida.append({
+                "id": p.id,
+                "mesa": p.mesa.numero if p.mesa else None,
+                "total": float(p.total),
+                "estado": p.estado,
+                "fecha": str(p.fecha_hora),
                 "detalles": [
                     {
                         "producto_nombre": d.producto.nombre,
                         "cantidad": d.cantidad,
                         "subtotal": float(d.precio_unitario * d.cantidad)
-                    }
-                    for d in detalles
+                    } for d in detalles
                 ]
             })
 
-        return Response(resultado)
+        return Response(salida)
 
 
-# ===============================
-# Pedidos por mesa (GET con mesa_id)
-# ===============================
+# =====================================
+# Pedidos por mesa
+# =====================================
 @api_view(['GET'])
 def pedidos_por_mesa(request):
     mesa_id = request.GET.get('mesa_id')
     if not mesa_id:
-        return Response({"error": "No se proporcionó mesa_id"}, status=400)
-
-    try:
-        mesa_id = int(mesa_id)
-    except ValueError:
-        return Response({"error": "mesa_id inválido"}, status=400)
+        return Response({"error": "mesa_id faltante"}, status=400)
 
     if not Mesa.objects.filter(id=mesa_id).exists():
-        return Response({"error": "No se encontró la mesa"}, status=404)
+        return Response({"error": "Mesa no existe"}, status=404)
 
     pedidos = Pedido.objects.filter(mesa_id=mesa_id).order_by('fecha_hora')
     serializer = PedidoSerializer(pedidos, many=True)
     return Response(serializer.data)
 
 
-# ===============================
+# =====================================
 # LOGIN CLIENTE
-# ===============================
+# =====================================
 @csrf_exempt
 def login_cliente(request):
     if request.method == 'POST':
@@ -482,47 +517,44 @@ def login_cliente(request):
             mesa_id = data.get('mesa_id')
 
             if not mesa_id:
-                return JsonResponse({"success": False, "message": "Debe proporcionar el ID de la mesa"}, status=400)
+                return JsonResponse({"success": False, "message": "Falta mesa_id"}, status=400)
 
-            try:
-                mesa = Mesa.objects.get(id=mesa_id)
-            except Mesa.DoesNotExist:
-                return JsonResponse({"success": False, "message": "Mesa no encontrada"}, status=404)
+            mesa = Mesa.objects.filter(id=mesa_id).first()
+            if not mesa:
+                return JsonResponse({"success": False, "message": "Mesa no existe"}, status=404)
 
             request.session['mesa_id'] = mesa.id
 
             return JsonResponse({"success": True, "mesa_numero": mesa.numero})
 
-        except Exception as e:
-            return JsonResponse({"success": False, "message": str(e)}, status=500)
+        except:
+            return JsonResponse({"success": False, "message": "Error interno"}, status=500)
 
-    return JsonResponse({"success": False, "message": "Método no permitido"}, status=405)
+    return JsonResponse({"success": False}, status=405)
 
 
-# ===============================
-# PEDIDOS DEL CLIENTE POR SESIÓN
-# ===============================
+# =====================================
+# Pedidos cliente según sesión
+# =====================================
 @api_view(['GET'])
 def pedidos_cliente(request):
     mesa_id = request.session.get('mesa_id')
     if not mesa_id:
-        return Response({"error": "No se encontró la mesa. Inicia sesión nuevamente."}, status=401)
+        return Response({"error": "Sin sesión"}, status=401)
 
-    pedidos = Pedido.objects.filter(mesa_id=mesa_id).order_by('fecha_hora')
-    serializer = PedidoSerializer(pedidos, many=True)
-    return Response(serializer.data)
+    pedidos = Pedido.objects.filter(mesa_id=mesa_id)
+    return Response(PedidoSerializer(pedidos, many=True).data)
 
 
-# ===============================
-# Registrar cliente (crea mesa)
-# ===============================
+# =====================================
+# Registrar Cliente (crea una mesa)
+# =====================================
 @api_view(['POST'])
 def registrar_cliente(request):
-    data = request.data
-    nombre = data.get("nombre")
+    nombre = request.data.get("nombre")
 
     if not nombre:
-        return Response({"message": "Falta el nombre"}, status=400)
+        return Response({"message": "Falta nombre"}, status=400)
 
     mesa = Mesa.objects.create(
         numero=Mesa.objects.count() + 1,
@@ -539,9 +571,9 @@ def registrar_cliente(request):
     })
 
 
-# ===============================
-# ALERTA DE RETRASOS (RF-10)
-# ===============================
+# =====================================
+# Revisar retrasos
+# =====================================
 @api_view(['GET'])
 def verificar_retrasos(request):
     ahora = timezone.now()
@@ -549,24 +581,25 @@ def verificar_retrasos(request):
 
     pedidos_retrasados = Pedido.objects.filter(
         estado__in=["pendiente", "en preparación"],
-        fecha_hora__lte=limite  # CAMBIADO
+        fecha_hora__lte=limite
     )
 
     alertas = [
         {
-            "id": pedido.id,
-            "mesa": pedido.mesa.numero if pedido.mesa else "N/A",
-            "estado": pedido.estado,
-            "tiempo": str(ahora - pedido.fecha_hora)  # CAMBIADO
+            "id": p.id,
+            "mesa": p.mesa.numero if p.mesa else "N/A",
+            "estado": p.estado,
+            "tiempo": str(ahora - p.fecha_hora)
         }
-        for pedido in pedidos_retrasados
+        for p in pedidos_retrasados
     ]
 
     return Response({"alertas": alertas})
 
-# ===============================
-# 🛑 Marcar pedido como retrasado (notificación en tiempo real)
-# ===============================
+
+# =====================================
+# Marcar retrasado + WebSocket
+# =====================================
 @api_view(['POST'])
 def marcar_retrasado(request, pedido_id):
     try:
@@ -574,83 +607,38 @@ def marcar_retrasado(request, pedido_id):
         pedido.estado = "retrasado"
         pedido.save()
 
-        # Notificación en tiempo real
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            "pedidos_grupo",   
+        layer = get_channel_layer()
+        async_to_sync(layer.group_send)(
+            "pedidos_grupo",
             {
-                "type": "enviar_alerta",  
+                "type": "enviar_alerta",
                 "mensaje": {
-                    "texto": f"🚨 El pedido #{pedido.id} presenta retraso",
+                    "texto": f"🚨 Pedido #{pedido.id} retrasado",
                     "tipo": "retraso",
-                    "mesa": pedido.mesa.numero if pedido.mesa else "N/A"
+                    "mesa": pedido.mesa.numero
                 }
             }
         )
 
-        return Response({
-            "message": "Pedido marcado como retrasado",
-            "pedido_id": pedido.id,
-            "estado": pedido.estado
-        })
-
+        return Response({"mensaje": "Marcado como retrasado"})
     except Pedido.DoesNotExist:
-        return Response({"error": "Pedido no encontrado"}, status=404)
-
-from django.http import JsonResponse
-from .models import Pedido
-import json
-
-def actualizar_estado_pedido(request, pedido_id):
-    if request.method == "PATCH":
-        body = json.loads(request.body)
-        nuevo_estado = body.get("estado")
-
-        try:
-            pedido = Pedido.objects.get(id=pedido_id)
-            pedido.estado = nuevo_estado
-            pedido.save()
-
-            return JsonResponse({"mensaje": "Estado actualizado", "estado": pedido.estado})
-        except Pedido.DoesNotExist:
-            return JsonResponse({"error": "Pedido no encontrado"}, status=404)
-
-    return JsonResponse({"error": "Método no permitido"}, status=405)
+        return Response({"error": "No existe"}, status=404)
 
 
-@api_view(['PATCH'])
-def actualizar_pedido_estado(request, pk):
-    try:
-        pedido = Pedido.objects.get(pk=pk)
-    except Pedido.DoesNotExist:
-        return Response({"error": "Pedido no encontrado"}, status=404)
-
-    nuevo_estado = request.data.get("estado")
-    if not nuevo_estado:
-        return Response({"error": "Estado no enviado"}, status=400)
-
-    pedido.estado = nuevo_estado
-
-    # ✅ Guardar hora de finalización solo si el pedido se completa
-    if nuevo_estado in ["servido", "pagado", "listo"]:  # ajusta según tus estados
-        pedido.hora_fin_preparacion = timezone.now()
-
-    pedido.save()
-
-    return Response({
-        "mensaje": "Estado actualizado correctamente",
-        "estado": nuevo_estado
-    })
-
-
+# =====================================
+# Análisis de tiempos
+# =====================================
 @api_view(['GET'])
 def analisis_tiempos(request):
-    pedidos = Pedido.objects.filter(tiempo_inicio__isnull=False, tiempo_fin__isnull=False)
+    pedidos = Pedido.objects.filter(
+        tiempo_inicio__isnull=False,
+        tiempo_fin__isnull=False
+    )
 
     tiempos = [p.tiempo_preparacion for p in pedidos if p.tiempo_preparacion]
 
     if not tiempos:
-        return Response({"mensaje": "No hay datos suficientes"}, status=200)
+        return Response({"mensaje": "No hay datos"})
 
     promedio = sum(tiempos) / len(tiempos)
 
@@ -661,59 +649,154 @@ def analisis_tiempos(request):
         "tiempo_minimo_min": round(min(tiempos), 2)
     })
 
-def api_tiempos_pedidos(request):
-    # últimos 20 pedidos con tiempo calculado
-    pedidos = Pedido.objects.annotate(
-        tiempo_preparacion=ExpressionWrapper(
-            F('hora_fin_preparacion') - F('hora_creacion'),
-            output_field=DurationField()
-        )
-    ).order_by('-hora_creacion')[:20]
 
-    datos = [
-        {
-            "id": p.id,
-            "tiempo_preparacion_min": p.tiempo_preparacion.total_seconds() / 60
-        }
-        for p in pedidos if p.hora_fin_preparacion
-    ]
-    return JsonResponse(datos, safe=False)
-
-
+# =====================================
+# API tiempos de pedidos (últimos 20)
+# =====================================
 @api_view(['GET'])
 def tiempos_pedidos(request):
-    """
-    Devuelve los últimos 20 pedidos con su tiempo de preparación en minutos.
-    """
     pedidos = Pedido.objects.all().order_by('-fecha_hora')[:20]
     serializer = PedidoSerializer(pedidos, many=True)
-    
-    # Extraemos solo id y tiempo
+
     datos = [
-        {"id": p["id"], "tiempo_preparacion_min": p["tiempo_preparacion_min"]}
-        for p in serializer.data
+        {"id": row["id"], "tiempo_preparacion_min": row["tiempo_preparacion_min"]}
+        for row in serializer.data
     ]
-    
+
     return Response(datos)
 
-# ===============================
-# HISTORIAL DE FACTURAS 
-# ===============================
+
+# =====================================
+# Historial de facturas
+# =====================================
 @api_view(['GET'])
 def historial_facturas(request):
     pagos = Pago.objects.select_related('pedido').order_by('-fecha_pago')
 
-    data = [
+    salida = [
         {
-            "factura_id": pago.id,
-            "pedido_id": pago.pedido.id,
-            "mesa": pago.pedido.mesa.numero if pago.pedido.mesa else None,
-            "monto_pagado": float(pago.monto_pagado),
-            "metodo_pago": pago.metodo_pago,
-            "fecha_pago": pago.fecha_pago
+            "factura_id": p.id,
+            "pedido_id": p.pedido.id,
+            "mesa": p.pedido.mesa.numero if p.pedido.mesa else None,
+            "monto_pagado": float(p.monto_pagado),
+            "metodo_pago": p.metodo_pago,
+            "fecha_pago": p.fecha_pago
         }
-        for pago in pagos
+        for p in pagos
     ]
 
-    return Response(data)
+    return Response(salida)
+
+
+# =====================================
+# Registrar pedido del cliente (App Cliente)
+# =====================================
+@api_view(['POST'])
+def registrar_pedido_cliente(request):
+    try:
+        # Obtener mesa_id desde sesión o desde el body
+        mesa_id = request.session.get("mesa_id") or request.data.get("mesa_id")
+        if not mesa_id:
+            return Response({"error": "Debe enviar mesa_id o iniciar sesión"}, status=400)
+
+        productos = request.data.get("productos", [])
+        if not productos:
+            return Response({"error": "Debe enviar productos"}, status=400)
+
+        mesa = Mesa.objects.filter(id=mesa_id).first()
+        if not mesa:
+            return Response({"error": "Mesa no existe"}, status=404)
+
+        # Tomamos el primer mesero disponible
+        mesero = Mesero.objects.first()
+        if not mesero:
+            return Response({"error": "No hay mesero disponible"}, status=500)
+
+        # Crear pedido
+        pedido = Pedido.objects.create(
+            mesa=mesa,
+            mesero=mesero,
+            estado="pendiente",
+            total=0
+        )
+
+        total = 0
+        for item in productos:
+            producto = Producto.objects.filter(id=item["producto_id"]).first()
+            if not producto:
+                continue
+            cantidad = int(item["cantidad"])
+            subtotal = producto.precio * cantidad
+            total += subtotal
+
+            DetallePedido.objects.create(
+                pedido=pedido,
+                producto=producto,
+                cantidad=cantidad,
+                precio_unitario=producto.precio
+            )
+
+        pedido.total = total
+        pedido.save()
+
+        return Response({
+            "mensaje": "Pedido registrado correctamente",
+            "pedido_id": pedido.id,
+            "total": total
+        })
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
+
+# ==========================================================
+# 🛑 Vista para la descarga de PDF
+# ==========================================================
+def descargar_pdf_factura(request, factura_id):
+    """
+    Genera y devuelve la factura en formato PDF.
+    factura_id es el PK del objeto Pago (Factura).
+    """
+
+    # --- Obtener la factura ---
+    try:
+        pago = get_object_or_404(Pago, pk=factura_id)
+    except Exception:
+        return HttpResponse(
+            f"Error: La factura con ID {factura_id} no fue encontrada.",
+            status=404
+        )
+
+    # --- Preparar datos para la plantilla ---
+    context = {
+        'factura_id': pago.id,
+        'fecha_emision': pago.fecha_pago.strftime("%d/%m/%Y %H:%M:%S"),
+        'monto_total': pago.monto_pagado,
+        'metodo_pago': pago.metodo_pago,
+        'pedido_id': pago.pedido.id,          # Pago → Pedido
+        'mesa_numero': pago.pedido.mesa.numero,  # Pedido → Mesa
+    }
+
+    # --- Renderizar PDF ---
+    pdf = render_to_pdf('factura_template.html', context)
+
+    if pdf:
+        filename = f'Factura_Brisa_Caribena_{factura_id}.pdf'
+        response = HttpResponse(pdf, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    return HttpResponse("Error al generar el PDF.", status=500)
+def render_to_pdf(template_src, context_dict={}):
+    """ Convierte una plantilla HTML renderizada a un objeto PDF usando xhtml2pdf """
+    template = get_template(template_src)
+    html = template.render(context_dict)
+    
+    # Crea el objeto HttpResponse que contendrá la respuesta PDF
+    result = BytesIO() # 🛑 Necesitas importar BytesIO
+    pdf = pisa.pisaDocument(BytesIO(html.encode("UTF-8")), result)
+    
+    if not pdf.err:
+        return result.getvalue()
+    return None # Retorna None si hay un error en la conversión
+
 

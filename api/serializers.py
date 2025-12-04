@@ -72,6 +72,11 @@ class PedidoSerializer(serializers.ModelSerializer):
     mesa = serializers.PrimaryKeyRelatedField(queryset=Mesa.objects.all())
     mesero = serializers.PrimaryKeyRelatedField(queryset=Mesero.objects.all())
     detalles = DetallePedidoSerializer(many=True, read_only=True)
+
+    # Mapear los campos reales de tiempos
+    hora_inicio_preparacion = serializers.DateTimeField(source='tiempo_inicio', read_only=True)
+    hora_fin_preparacion = serializers.DateTimeField(source='tiempo_fin', read_only=True)
+    
     tiempo_transcurrido_min = serializers.SerializerMethodField()
     tiempo_preparacion_min = serializers.SerializerMethodField()
 
@@ -97,8 +102,8 @@ class PedidoSerializer(serializers.ModelSerializer):
         return None
 
     def get_tiempo_preparacion_min(self, obj):
-        if obj.hora_inicio_preparacion and obj.hora_fin_preparacion:
-            return round((obj.hora_fin_preparacion - obj.hora_inicio_preparacion).total_seconds() / 60, 2)
+        if obj.tiempo_inicio and obj.tiempo_fin:
+            return round((obj.tiempo_fin - obj.tiempo_inicio).total_seconds() / 60, 2)
         return None
 
 # -------------------------------
@@ -137,3 +142,14 @@ class AlertaSerializer(serializers.ModelSerializer):
 
     def get_minutos_transcurridos(self, obj):
         return obj.minutos_transcurridos
+
+class PedidoDetalleReciboSerializer(serializers.ModelSerializer):
+    mesa = serializers.SerializerMethodField()
+    detalles = DetallePedidoSerializer(source="detalles", many=True, read_only=True)
+
+    class Meta:
+        model = Pedido
+        fields = ["id", "mesa", "estado", "detalles"]
+
+    def get_mesa(self, obj):
+        return {"numero": obj.mesa.numero if obj.mesa else None}

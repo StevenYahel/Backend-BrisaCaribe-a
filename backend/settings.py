@@ -29,7 +29,7 @@ INSTALLED_APPS = [
     # Terceros
     'rest_framework',
     'corsheaders',
-    'channels',  # ✅ Channels para WebSockets
+    'channels',  
 
     # App principal
     'api.apps.ApiConfig',
@@ -84,7 +84,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'backend.wsgi.application'
-ASGI_APPLICATION = 'backend.asgi.application'  # ✅ ASGI para Channels
+ASGI_APPLICATION = 'backend.asgi.application'  # ASGI para Channels
 
 # -------------------------------
 # Base de datos
@@ -151,9 +151,6 @@ JAZZMIN_SETTINGS = {
 # -------------------------------
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",  #Redis
-        "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
-        },
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
     },
 }

@@ -60,7 +60,7 @@ urlpatterns = [
     # PAGOS
     # --------------------------
     path('pagos/registrar/', views.registrar_pago, name='registrar_pago'),
-    # 🛑 CORRECCIÓN: Se elimina el prefijo 'api/' de esta línea.
+    
     path('factura/<int:factura_id>/', views.descargar_pdf_factura, name='descargar_pdf_factura'),
 
     # --------------------------
